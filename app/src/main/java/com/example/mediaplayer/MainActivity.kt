@@ -11,6 +11,7 @@ import android.os.Build
 import android.util.Size
 import android.provider.MediaStore
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -87,12 +88,13 @@ private enum class BottomNavItem(val title: String) {
     Audio("Audio")
 }
 
-private data class VideoItem(
+private data class MediaItem(
     val title: String,
     val uri: Uri,
     val durationMs: Long,
     val sizeBytes: Long,
-    val formatExt: String
+    val formatExt: String,
+    val isVideo: Boolean
 )
 
 private data class FolderStats(
@@ -111,7 +113,7 @@ fun MediaPlayerScreen() {
     var hasPermission by remember { mutableStateOf(hasMediaPermission(context, selectedTab)) }
     var folders by remember { mutableStateOf<List<FolderStats>>(emptyList()) }
     var selectedFolder by remember { mutableStateOf<String?>(null) }
-    var folderVideos by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
+    var folderItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
     var refreshCounter by remember { mutableStateOf(0) }
     var isRefreshing by remember { mutableStateOf(false) }
 
@@ -127,7 +129,7 @@ fun MediaPlayerScreen() {
     LaunchedEffect(selectedTab) {
         hasPermission = hasMediaPermission(context, selectedTab)
         selectedFolder = null
-        folderVideos = emptyList()
+        folderItems = emptyList()
     }
 
     LaunchedEffect(selectedTab, hasPermission, refreshCounter) {
@@ -146,16 +148,25 @@ fun MediaPlayerScreen() {
 
     LaunchedEffect(selectedFolder, hasPermission, refreshCounter, selectedTab) {
         val activeFolder = selectedFolder
-        if (activeFolder != null && hasPermission && selectedTab == BottomNavItem.Video) {
+        if (activeFolder != null && hasPermission) {
             isRefreshing = true
             try {
-                folderVideos = loadVideosInFolder(context, activeFolder)
+                folderItems = if (selectedTab == BottomNavItem.Video) {
+                    loadVideosInFolder(context, activeFolder)
+                } else {
+                    loadAudiosInFolder(context, activeFolder)
+                }
             } finally {
                 isRefreshing = false
             }
         } else if (activeFolder != null) {
-            folderVideos = emptyList()
+            folderItems = emptyList()
         }
+    }
+
+    BackHandler(enabled = selectedFolder != null) {
+        selectedFolder = null
+        folderItems = emptyList()
     }
 
     Scaffold(
@@ -171,7 +182,7 @@ fun MediaPlayerScreen() {
                             IconButton(
                                 onClick = {
                                     selectedFolder = null
-                                    folderVideos = emptyList()
+                                    folderItems = emptyList()
                                 }
                             ) {
                                 Icon(
@@ -280,29 +291,31 @@ fun MediaPlayerScreen() {
                 .padding(innerPadding)
         ) {
             if (selectedFolder != null) {
-                if (selectedTab != BottomNavItem.Video) {
+                if (folderItems.isEmpty()) {
                     item {
-                        Text(
-                            text = "Video list is only available for the Video tab."
-                        )
-                    }
-                } else if (folderVideos.isEmpty()) {
-                    item {
-                        Text(text = "No videos found in this folder.")
+                        Text(text = "No ${selectedTab.title.lowercase()} files found in this folder.")
                     }
                 } else {
-                    items(folderVideos) { video ->
+                    items(folderItems) { media ->
                         ListItem(
                             modifier = Modifier.clickable { },
-                            headlineContent = { Text(video.title) },
+                            headlineContent = { Text(media.title) },
                             supportingContent = {
-                                Text(text = formatVideoMetaLine(video))
+                                Text(text = formatMediaMetaLine(media))
                             },
                             leadingContent = {
-                                VideoThumbnail(
-                                    uri = video.uri,
-                                    contentDescription = video.title
-                                )
+                                if (media.isVideo) {
+                                    VideoThumbnail(
+                                        uri = media.uri,
+                                        contentDescription = media.title
+                                    )
+                                } else {
+                                    Icon(
+                                        imageVector = Icons.Default.Audiotrack,
+                                        contentDescription = media.title,
+                                        modifier = Modifier.size(50.dp)
+                                    )
+                                }
                             },
                             colors = ListItemDefaults.colors(
                                 containerColor = Color.Transparent
@@ -439,21 +452,21 @@ private fun loadMediaFolders(context: Context, tab: BottomNavItem): List<FolderS
     }.sortedBy { it.folderName.lowercase(Locale.getDefault()) }
 }
 
-private fun loadVideosInFolder(context: Context, folder: String): List<VideoItem> {
+private fun loadVideosInFolder(context: Context, folder: String): List<MediaItem> {
+    val folderColumn = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        MediaStore.MediaColumns.RELATIVE_PATH
+    } else {
+        MediaStore.MediaColumns.DATA
+    }
     val projection = arrayOf(
         MediaStore.Video.Media._ID,
         MediaStore.Video.Media.DISPLAY_NAME,
         MediaStore.Video.Media.DURATION,
         MediaStore.Video.Media.SIZE,
         MediaStore.Video.Media.MIME_TYPE,
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            MediaStore.MediaColumns.RELATIVE_PATH
-        } else {
-            MediaStore.MediaColumns.DATA
-        }
+        folderColumn
     )
-    val folderColumn = projection[2]
-    val videos = mutableListOf<VideoItem>()
+    val videos = mutableListOf<MediaItem>()
 
     context.contentResolver.query(
         MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
@@ -482,18 +495,77 @@ private fun loadVideosInFolder(context: Context, folder: String): List<VideoItem
             val mimeType = cursor.getString(mimeTypeIndex)
             val uri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
             videos.add(
-                VideoItem(
+                MediaItem(
                     title = title,
                     uri = uri,
                     durationMs = durationMs,
                     sizeBytes = sizeBytes,
-                    formatExt = resolveVideoFormat(title, mimeType)
+                    formatExt = resolveMediaFormat(title, mimeType),
+                    isVideo = true
                 )
             )
         }
     }
 
     return videos
+}
+
+private fun loadAudiosInFolder(context: Context, folder: String): List<MediaItem> {
+    val folderColumn = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        MediaStore.MediaColumns.RELATIVE_PATH
+    } else {
+        MediaStore.MediaColumns.DATA
+    }
+    val projection = arrayOf(
+        MediaStore.Audio.Media._ID,
+        MediaStore.Audio.Media.DISPLAY_NAME,
+        MediaStore.Audio.Media.DURATION,
+        MediaStore.Audio.Media.SIZE,
+        MediaStore.Audio.Media.MIME_TYPE,
+        folderColumn
+    )
+    val audios = mutableListOf<MediaItem>()
+
+    context.contentResolver.query(
+        MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+        projection,
+        null,
+        null,
+        "${MediaStore.Audio.Media.DATE_ADDED} DESC"
+    )?.use { cursor ->
+        val idIndex = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
+        val nameIndex = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DISPLAY_NAME)
+        val durationIndex = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION)
+        val sizeIndex = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.SIZE)
+        val mimeTypeIndex = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.MIME_TYPE)
+        val folderIndex = cursor.getColumnIndexOrThrow(folderColumn)
+
+        while (cursor.moveToNext()) {
+            val rawFolder = cursor.getString(folderIndex) ?: continue
+            if (normalizeFolderName(rawFolder) != folder) {
+                continue
+            }
+
+            val id = cursor.getLong(idIndex)
+            val title = cursor.getString(nameIndex) ?: "Untitled"
+            val durationMs = cursor.getLong(durationIndex).coerceAtLeast(0L)
+            val sizeBytes = cursor.getLong(sizeIndex).coerceAtLeast(0L)
+            val mimeType = cursor.getString(mimeTypeIndex)
+            val uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id)
+            audios.add(
+                MediaItem(
+                    title = title,
+                    uri = uri,
+                    durationMs = durationMs,
+                    sizeBytes = sizeBytes,
+                    formatExt = resolveMediaFormat(title, mimeType),
+                    isVideo = false
+                )
+            )
+        }
+    }
+
+    return audios
 }
 
 @Composable
@@ -548,11 +620,11 @@ private fun buildFolderSummary(tab: BottomNavItem, stats: FolderStats): String {
         BottomNavItem.Audio -> if (stats.itemCount == 1) "Song" else "Songs"
     }
     val base = "${stats.itemCount} $label | ${formatBytes(stats.totalBytes)}"
-    return if (stats.isSdFolder) "[$base | SD]" else "[$base]"
+    return if (stats.isSdFolder) "$base | SD" else base
 }
 
-private fun formatVideoMetaLine(video: VideoItem): String {
-    return "[${formatDuration(video.durationMs)} | ${formatBytes(video.sizeBytes)} | ${video.formatExt}]"
+private fun formatMediaMetaLine(media: MediaItem): String {
+    return "${formatDuration(media.durationMs)} | ${formatBytes(media.sizeBytes)} | ${media.formatExt}"
 }
 
 private fun formatBytes(bytes: Long): String {
@@ -577,7 +649,7 @@ private fun formatDuration(durationMs: Long): String {
     }
 }
 
-private fun resolveVideoFormat(fileName: String, mimeType: String?): String {
+private fun resolveMediaFormat(fileName: String, mimeType: String?): String {
     val ext = fileName.substringAfterLast('.', "").lowercase(Locale.getDefault())
     if (ext.isNotBlank()) return ext
     if (!mimeType.isNullOrBlank() && mimeType.contains("/")) {
