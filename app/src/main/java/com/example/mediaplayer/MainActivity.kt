@@ -10,10 +10,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -30,6 +32,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -46,7 +49,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -77,6 +79,7 @@ fun MediaPlayerScreen() {
     var hasPermission by remember { mutableStateOf(hasMediaPermission(context, selectedTab)) }
     var folders by remember { mutableStateOf<List<String>>(emptyList()) }
     var refreshCounter by remember { mutableStateOf(0) }
+    var isRefreshing by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -93,64 +96,77 @@ fun MediaPlayerScreen() {
 
     LaunchedEffect(selectedTab, hasPermission, refreshCounter) {
         folders = if (hasPermission) {
-            loadMediaFolders(context, selectedTab)
+            isRefreshing = true
+            try {
+                loadMediaFolders(context, selectedTab)
+            } finally {
+                isRefreshing = false
+            }
         } else {
+            isRefreshing = false
             emptyList()
         }
     }
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text(text = "Media Player") },
-                actions = {
-                    IconButton(onClick = { menuExpanded = true }) {
-                        Icon(
-                            imageVector = Icons.Default.MoreVert,
-                            contentDescription = "More options"
-                        )
-                    }
-                    DropdownMenu(
-                        expanded = menuExpanded,
-                        onDismissRequest = { menuExpanded = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Refresh") },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Default.Refresh,
-                                    contentDescription = null
-                                )
-                            },
-                            onClick = {
-                                refreshCounter++
-                                menuExpanded = false
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Storage") },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Default.Storage,
-                                    contentDescription = null
-                                )
-                            },
-                            onClick = { menuExpanded = false }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Settings") },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Default.Settings,
-                                    contentDescription = null
-                                )
-                            },
-                            onClick = { menuExpanded = false }
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors()
-            )
+            Column {
+                TopAppBar(
+                    title = { Text(text = "Media Player") },
+                    actions = {
+                        IconButton(onClick = { menuExpanded = true }) {
+                            Icon(
+                                imageVector = Icons.Default.MoreVert,
+                                contentDescription = "More options"
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = menuExpanded,
+                            onDismissRequest = { menuExpanded = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Refresh") },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.Refresh,
+                                        contentDescription = null
+                                    )
+                                },
+                                onClick = {
+                                    refreshCounter++
+                                    menuExpanded = false
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Storage") },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.Storage,
+                                        contentDescription = null
+                                    )
+                                },
+                                onClick = { menuExpanded = false }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Settings") },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.Settings,
+                                        contentDescription = null
+                                    )
+                                },
+                                onClick = { menuExpanded = false }
+                            )
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors()
+                )
+                if (isRefreshing) {
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
         },
         bottomBar = {
             NavigationBar(
@@ -187,16 +203,8 @@ fun MediaPlayerScreen() {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(horizontal = 16.dp, vertical = 12.dp)
         ) {
-            item {
-                Text(
-                    text = "${selectedTab.title} Folders",
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-
             if (!hasPermission) {
                 item {
                     Text(
@@ -223,7 +231,8 @@ fun MediaPlayerScreen() {
                         leadingContent = {
                             Icon(
                                 imageVector = Icons.Default.Folder,
-                                contentDescription = null
+                                contentDescription = null,
+                                modifier = Modifier.size(50.dp)
                             )
                         }
                     )
