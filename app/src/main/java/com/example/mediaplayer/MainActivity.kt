@@ -16,12 +16,14 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -42,6 +44,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
@@ -57,6 +60,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
@@ -64,6 +69,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.mediaplayer.ui.theme.MediaPlayerTheme
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -83,7 +89,17 @@ private enum class BottomNavItem(val title: String) {
 
 private data class VideoItem(
     val title: String,
-    val uri: Uri
+    val uri: Uri,
+    val durationMs: Long,
+    val sizeBytes: Long,
+    val formatExt: String
+)
+
+private data class FolderStats(
+    val folderName: String,
+    val itemCount: Int,
+    val totalBytes: Long,
+    val isSdFolder: Boolean
 )
 
 @Composable
@@ -93,7 +109,7 @@ fun MediaPlayerScreen() {
     var selectedTab by rememberSaveable { mutableStateOf(BottomNavItem.Video) }
     var menuExpanded by remember { mutableStateOf(false) }
     var hasPermission by remember { mutableStateOf(hasMediaPermission(context, selectedTab)) }
-    var folders by remember { mutableStateOf<List<String>>(emptyList()) }
+    var folders by remember { mutableStateOf<List<FolderStats>>(emptyList()) }
     var selectedFolder by remember { mutableStateOf<String?>(null) }
     var folderVideos by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
     var refreshCounter by remember { mutableStateOf(0) }
@@ -228,7 +244,7 @@ fun MediaPlayerScreen() {
             if (selectedFolder == null) {
                 NavigationBar(
                     modifier = Modifier.height(64.dp),
-                    containerColor = Color.Transparent
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
                 ) {
                     NavigationBarItem(
                         selected = selectedTab == BottomNavItem.Video,
@@ -279,6 +295,9 @@ fun MediaPlayerScreen() {
                         ListItem(
                             modifier = Modifier.clickable { },
                             headlineContent = { Text(video.title) },
+                            supportingContent = {
+                                Text(text = formatVideoMetaLine(video))
+                            },
                             leadingContent = {
                                 VideoThumbnail(
                                     uri = video.uri,
@@ -314,9 +333,17 @@ fun MediaPlayerScreen() {
                 items(folders) { folder ->
                     ListItem(
                         modifier = Modifier.clickable {
-                            selectedFolder = folder
+                            selectedFolder = folder.folderName
                         },
-                        headlineContent = { Text(folder) },
+                        headlineContent = { Text(folder.folderName) },
+                        supportingContent = {
+                            Text(
+                                text = buildFolderSummary(
+                                    tab = selectedTab,
+                                    stats = folder
+                                )
+                            )
+                        },
                         leadingContent = {
                             Icon(
                                 imageVector = Icons.Default.Folder,
@@ -353,7 +380,7 @@ private fun hasMediaPermission(context: Context, tab: BottomNavItem): Boolean {
     ) == PackageManager.PERMISSION_GRANTED
 }
 
-private fun loadMediaFolders(context: Context, tab: BottomNavItem): List<String> {
+private fun loadMediaFolders(context: Context, tab: BottomNavItem): List<FolderStats> {
     val collection = if (tab == BottomNavItem.Video) {
         MediaStore.Video.Media.EXTERNAL_CONTENT_URI
     } else {
@@ -365,9 +392,10 @@ private fun loadMediaFolders(context: Context, tab: BottomNavItem): List<String>
     } else {
         MediaStore.MediaColumns.DATA
     }
-
-    val projection = arrayOf(folderColumn)
-    val result = linkedSetOf<String>()
+    val dataColumn = MediaStore.MediaColumns.DATA
+    val sizeColumn = MediaStore.MediaColumns.SIZE
+    val projection = arrayOf(folderColumn, dataColumn, sizeColumn)
+    val aggregations = linkedMapOf<String, FolderAggregation>()
 
     context.contentResolver.query(
         collection,
@@ -376,22 +404,48 @@ private fun loadMediaFolders(context: Context, tab: BottomNavItem): List<String>
         null,
         null
     )?.use { cursor ->
-        val columnIndex = cursor.getColumnIndexOrThrow(folderColumn)
+        val folderIndex = cursor.getColumnIndexOrThrow(folderColumn)
+        val dataIndex = cursor.getColumnIndex(dataColumn)
+        val sizeIndex = cursor.getColumnIndexOrThrow(sizeColumn)
         while (cursor.moveToNext()) {
-            val rawFolder = cursor.getString(columnIndex) ?: continue
+            val rawFolder = cursor.getString(folderIndex) ?: continue
             val normalized = normalizeFolderName(rawFolder)
             if (normalized.isNotBlank()) {
-                result.add(normalized)
+                val dataPath = if (dataIndex >= 0) cursor.getString(dataIndex) else null
+                val size = cursor.getLong(sizeIndex).coerceAtLeast(0L)
+                val entry = aggregations.getOrPut(normalized) { FolderAggregation() }
+                entry.itemCount += 1
+                entry.totalBytes += size
+
+                val sdInfo = detectSdFromDataPath(dataPath)
+                if (sdInfo != null) {
+                    entry.knownStorageItems += 1
+                    if (sdInfo) {
+                        entry.sdItems += 1
+                    }
+                }
             }
         }
     }
-    return result.toList()
+    return aggregations.entries.map { (folderName, agg) ->
+        FolderStats(
+            folderName = folderName,
+            itemCount = agg.itemCount,
+            totalBytes = agg.totalBytes,
+            isSdFolder = agg.itemCount > 0 &&
+                agg.knownStorageItems == agg.itemCount &&
+                agg.sdItems == agg.itemCount
+        )
+    }.sortedBy { it.folderName.lowercase(Locale.getDefault()) }
 }
 
 private fun loadVideosInFolder(context: Context, folder: String): List<VideoItem> {
     val projection = arrayOf(
         MediaStore.Video.Media._ID,
         MediaStore.Video.Media.DISPLAY_NAME,
+        MediaStore.Video.Media.DURATION,
+        MediaStore.Video.Media.SIZE,
+        MediaStore.Video.Media.MIME_TYPE,
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             MediaStore.MediaColumns.RELATIVE_PATH
         } else {
@@ -410,6 +464,9 @@ private fun loadVideosInFolder(context: Context, folder: String): List<VideoItem
     )?.use { cursor ->
         val idIndex = cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
         val nameIndex = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
+        val durationIndex = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DURATION)
+        val sizeIndex = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.SIZE)
+        val mimeTypeIndex = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.MIME_TYPE)
         val folderIndex = cursor.getColumnIndexOrThrow(folderColumn)
 
         while (cursor.moveToNext()) {
@@ -420,8 +477,19 @@ private fun loadVideosInFolder(context: Context, folder: String): List<VideoItem
 
             val id = cursor.getLong(idIndex)
             val title = cursor.getString(nameIndex) ?: "Untitled"
+            val durationMs = cursor.getLong(durationIndex).coerceAtLeast(0L)
+            val sizeBytes = cursor.getLong(sizeIndex).coerceAtLeast(0L)
+            val mimeType = cursor.getString(mimeTypeIndex)
             val uri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
-            videos.add(VideoItem(title = title, uri = uri))
+            videos.add(
+                VideoItem(
+                    title = title,
+                    uri = uri,
+                    durationMs = durationMs,
+                    sizeBytes = sizeBytes,
+                    formatExt = resolveVideoFormat(title, mimeType)
+                )
+            )
         }
     }
 
@@ -444,18 +512,85 @@ private fun VideoThumbnail(uri: Uri, contentDescription: String) {
     }
 
     if (bitmap != null) {
-        Image(
-            bitmap = bitmap!!.asImageBitmap(),
-            contentDescription = contentDescription,
-            modifier = Modifier.size(56.dp)
-        )
+        Box(
+            modifier = Modifier
+                .size(width = 118.dp, height = 73.dp)
+                .clip(RoundedCornerShape(6.dp))
+        ) {
+            Image(
+                bitmap = bitmap!!.asImageBitmap(),
+                contentDescription = contentDescription,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
     } else {
         Icon(
             imageVector = Icons.Default.VideoLibrary,
             contentDescription = contentDescription,
-            modifier = Modifier.size(56.dp)
+            modifier = Modifier
+                .size(width = 118.dp, height = 73.dp)
+                .clip(RoundedCornerShape(6.dp))
         )
     }
+}
+
+private data class FolderAggregation(
+    var itemCount: Int = 0,
+    var totalBytes: Long = 0,
+    var knownStorageItems: Int = 0,
+    var sdItems: Int = 0
+)
+
+private fun buildFolderSummary(tab: BottomNavItem, stats: FolderStats): String {
+    val label = when (tab) {
+        BottomNavItem.Video -> if (stats.itemCount == 1) "Video" else "Videos"
+        BottomNavItem.Audio -> if (stats.itemCount == 1) "Song" else "Songs"
+    }
+    val base = "${stats.itemCount} $label | ${formatBytes(stats.totalBytes)}"
+    return if (stats.isSdFolder) "[$base | SD]" else "[$base]"
+}
+
+private fun formatVideoMetaLine(video: VideoItem): String {
+    return "[${formatDuration(video.durationMs)} | ${formatBytes(video.sizeBytes)} | ${video.formatExt}]"
+}
+
+private fun formatBytes(bytes: Long): String {
+    if (bytes < 1024L) return "$bytes B"
+    val kb = bytes / 1024.0
+    if (kb < 1024.0) return String.format(Locale.US, "%.1f KB", kb)
+    val mb = kb / 1024.0
+    if (mb < 1024.0) return String.format(Locale.US, "%.1f MB", mb)
+    val gb = mb / 1024.0
+    return String.format(Locale.US, "%.1f GB", gb)
+}
+
+private fun formatDuration(durationMs: Long): String {
+    val totalSeconds = durationMs / 1000
+    val hours = totalSeconds / 3600
+    val minutes = (totalSeconds % 3600) / 60
+    val seconds = totalSeconds % 60
+    return if (hours > 0) {
+        String.format(Locale.US, "%d:%02d:%02d", hours, minutes, seconds)
+    } else {
+        String.format(Locale.US, "%02d:%02d", minutes, seconds)
+    }
+}
+
+private fun resolveVideoFormat(fileName: String, mimeType: String?): String {
+    val ext = fileName.substringAfterLast('.', "").lowercase(Locale.getDefault())
+    if (ext.isNotBlank()) return ext
+    if (!mimeType.isNullOrBlank() && mimeType.contains("/")) {
+        return mimeType.substringAfter('/').lowercase(Locale.getDefault())
+    }
+    return "unknown"
+}
+
+private fun detectSdFromDataPath(dataPath: String?): Boolean? {
+    if (dataPath.isNullOrBlank()) return null
+    val normalized = dataPath.replace('\\', '/').lowercase(Locale.getDefault())
+    if (!normalized.startsWith("/storage/")) return null
+    return !normalized.startsWith("/storage/emulated/0")
 }
 
 private fun normalizeFolderName(raw: String): String {
