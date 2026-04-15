@@ -37,7 +37,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.WindowInsets
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -155,8 +154,7 @@ fun MediaPlayerScreen() {
         },
         bottomBar = {
             NavigationBar(
-                modifier = Modifier.height(64.dp),
-                windowInsets = WindowInsets(0.dp, 0.dp, 0.dp, 0.dp)
+                modifier = Modifier.height(64.dp)
             ) {
                 NavigationBarItem(
                     selected = selectedTab == BottomNavItem.Video,
