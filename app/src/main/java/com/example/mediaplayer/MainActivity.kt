@@ -34,8 +34,10 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.VideoLibrary
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -66,8 +68,10 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.example.mediaplayer.ui.theme.MediaPlayerTheme
 import java.util.Locale
@@ -116,6 +120,8 @@ fun MediaPlayerScreen() {
     var folderItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
     var refreshCounter by remember { mutableStateOf(0) }
     var isRefreshing by remember { mutableStateOf(false) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    var sortAscending by rememberSaveable { mutableStateOf(true) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -130,6 +136,7 @@ fun MediaPlayerScreen() {
         hasPermission = hasMediaPermission(context, selectedTab)
         selectedFolder = null
         folderItems = emptyList()
+        searchQuery = ""
     }
 
     LaunchedEffect(selectedTab, hasPermission, refreshCounter) {
@@ -193,7 +200,26 @@ fun MediaPlayerScreen() {
                         }
                     },
                     actions = {
-                        if (selectedFolder == null) {
+                        if (selectedFolder != null) {
+                            IconButton(
+                                onClick = {
+                                    // TODO: Hook actual search input UI next
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Search,
+                                    contentDescription = "Search"
+                                )
+                            }
+                            IconButton(
+                                onClick = { sortAscending = !sortAscending }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Sort,
+                                    contentDescription = "Sort by"
+                                )
+                            }
+                        } else {
                             IconButton(onClick = { menuExpanded = true }) {
                                 Icon(
                                     imageVector = Icons.Default.MoreVert,
@@ -290,18 +316,38 @@ fun MediaPlayerScreen() {
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
+            val filteredItems = folderItems
+                .filter { media ->
+                    media.title.contains(searchQuery, ignoreCase = true)
+                }
+                .let { media ->
+                    if (sortAscending) {
+                        media.sortedBy { it.title.lowercase(Locale.getDefault()) }
+                    } else {
+                        media.sortedByDescending { it.title.lowercase(Locale.getDefault()) }
+                    }
+                }
             if (selectedFolder != null) {
-                if (folderItems.isEmpty()) {
+                if (filteredItems.isEmpty()) {
                     item {
                         Text(text = "No ${selectedTab.title.lowercase()} files found in this folder.")
                     }
                 } else {
-                    items(folderItems) { media ->
+                    items(filteredItems) { media ->
                         ListItem(
                             modifier = Modifier.clickable { },
-                            headlineContent = { Text(media.title) },
+                            headlineContent = {
+                                Text(
+                                    text = media.title,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            },
                             supportingContent = {
-                                Text(text = formatMediaMetaLine(media))
+                                Text(
+                                    text = formatMediaMetaLine(media),
+                                    fontSize = 12.sp
+                                )
                             },
                             leadingContent = {
                                 if (media.isVideo) {
@@ -310,10 +356,9 @@ fun MediaPlayerScreen() {
                                         contentDescription = media.title
                                     )
                                 } else {
-                                    Icon(
-                                        imageVector = Icons.Default.Audiotrack,
-                                        contentDescription = media.title,
-                                        modifier = Modifier.size(50.dp)
+                                    AudioThumbnail(
+                                        uri = media.uri,
+                                        contentDescription = media.title
                                     )
                                 }
                             },
@@ -354,14 +399,15 @@ fun MediaPlayerScreen() {
                                 text = buildFolderSummary(
                                     tab = selectedTab,
                                     stats = folder
-                                )
+                                ),
+                                fontSize = 12.sp
                             )
                         },
                         leadingContent = {
                             Icon(
                                 imageVector = Icons.Default.Folder,
                                 contentDescription = null,
-                                modifier = Modifier.size(50.dp)
+                                modifier = Modifier.size(56.dp)
                             )
                         },
                         colors = ListItemDefaults.colors(
@@ -574,7 +620,7 @@ private fun VideoThumbnail(uri: Uri, contentDescription: String) {
     val bitmap by produceState<Bitmap?>(initialValue = null, uri) {
         value = try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                context.contentResolver.loadThumbnail(uri, Size(120, 120), null)
+                context.contentResolver.loadThumbnail(uri, Size(472, 292), null)
             } else {
                 null
             }
@@ -587,7 +633,7 @@ private fun VideoThumbnail(uri: Uri, contentDescription: String) {
         Box(
             modifier = Modifier
                 .size(width = 118.dp, height = 73.dp)
-                .clip(RoundedCornerShape(6.dp))
+                .clip(RoundedCornerShape(12.dp))
         ) {
             Image(
                 bitmap = bitmap!!.asImageBitmap(),
@@ -602,7 +648,46 @@ private fun VideoThumbnail(uri: Uri, contentDescription: String) {
             contentDescription = contentDescription,
             modifier = Modifier
                 .size(width = 118.dp, height = 73.dp)
-                .clip(RoundedCornerShape(6.dp))
+                    .clip(RoundedCornerShape(12.dp))
+        )
+    }
+}
+
+@Composable
+private fun AudioThumbnail(uri: Uri, contentDescription: String) {
+    val context = LocalContext.current
+    val bitmap by produceState<Bitmap?>(initialValue = null, uri) {
+        value = try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                context.contentResolver.loadThumbnail(uri, Size(300, 300), null)
+            } else {
+                null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    if (bitmap != null) {
+        Box(
+            modifier = Modifier
+                .size(73.dp)
+                .clip(RoundedCornerShape(10.dp))
+        ) {
+            Image(
+                bitmap = bitmap!!.asImageBitmap(),
+                contentDescription = contentDescription,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+    } else {
+        Icon(
+            imageVector = Icons.Default.Audiotrack,
+            contentDescription = contentDescription,
+            modifier = Modifier
+                .size(73.dp)
+                .clip(RoundedCornerShape(10.dp))
         )
     }
 }
